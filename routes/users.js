@@ -1,0 +1,88 @@
+const express = require('express');
+const User = require('../models/User');
+const { auth, requireSuperadmin } = require('../middleware/auth');
+
+const router = express.Router();
+
+/** List users (staff + superadmin) for assign dropdown - superadmin only */
+router.get('/', auth, requireSuperadmin(), async (req, res) => {
+  try {
+    const users = await User.find({ role: { $in: ['staff', 'superadmin'] }, isActive: true })
+      .select('_id firstName lastName email role')
+      .sort('firstName lastName')
+      .lean();
+    res.json({ users });
+  } catch (err) {
+    res.status(500).json({ message: 'Server error' });
+  }
+});
+
+/** Super admin: full user details + how many are currently logged in (lastLogin in last 15 min) */
+const LOGGED_IN_WINDOW_MS = 15 * 60 * 1000;
+
+router.get('/details', auth, requireSuperadmin(), async (req, res) => {
+  try {
+    const now = new Date();
+    const since = new Date(now.getTime() - LOGGED_IN_WINDOW_MS);
+    const all = await User.find({ role: { $in: ['staff', 'superadmin'] } })
+      .select('_id firstName lastName email role phone isActive lastLogin createdAt')
+      .sort('firstName lastName')
+      .lean();
+    const loggedInCount = all.filter((u) => u.lastLogin && new Date(u.lastLogin) >= since).length;
+    res.json({ users: all, loggedInCount, totalUsers: all.length });
+  } catch (err) {
+    res.status(500).json({ message: 'Server error' });
+  }
+});
+
+/** Get one user by id (super admin only) */
+router.get('/:id', auth, requireSuperadmin(), async (req, res) => {
+  try {
+    const u = await User.findById(req.params.id).select('-password').lean();
+    if (!u) return res.status(404).json({ message: 'User not found' });
+    if (!['staff', 'superadmin'].includes(u.role)) return res.status(404).json({ message: 'User not found' });
+    res.json({ user: u });
+  } catch (err) {
+    res.status(500).json({ message: 'Server error' });
+  }
+});
+
+/** Update user (super admin only) - no password change */
+router.put('/:id', auth, requireSuperadmin(), async (req, res) => {
+  try {
+    const { firstName, lastName, email, role, phone, isActive, team } = req.body;
+    const u = await User.findById(req.params.id);
+    if (!u) return res.status(404).json({ message: 'User not found' });
+    if (!['staff', 'superadmin'].includes(u.role)) return res.status(404).json({ message: 'User not found' });
+    if (firstName != null) u.firstName = firstName;
+    if (lastName != null) u.lastName = lastName;
+    if (email != null) u.email = email.trim().toLowerCase();
+    if (role != null && ['staff', 'superadmin'].includes(role)) u.role = role;
+    if (phone != null) u.phone = phone;
+    if (typeof isActive === 'boolean') u.isActive = isActive;
+    if (team != null) u.team = team;
+    await u.save();
+    const out = await User.findById(u._id).select('-password').lean();
+    res.json({ user: out });
+  } catch (err) {
+    if (err.code === 11000) return res.status(400).json({ message: 'Email already in use' });
+    res.status(500).json({ message: 'Server error' });
+  }
+});
+
+/** Delete user: soft delete (set isActive false) so data is kept */
+router.delete('/:id', auth, requireSuperadmin(), async (req, res) => {
+  try {
+    const u = await User.findById(req.params.id);
+    if (!u) return res.status(404).json({ message: 'User not found' });
+    if (!['staff', 'superadmin'].includes(u.role)) return res.status(404).json({ message: 'User not found' });
+    if (req.user.id === req.params.id) return res.status(400).json({ message: 'Cannot delete your own account' });
+    u.isActive = false;
+    await u.save();
+    res.json({ message: 'User deactivated successfully' });
+  } catch (err) {
+    res.status(500).json({ message: 'Server error' });
+  }
+});
+
+module.exports = router;
