@@ -15,7 +15,19 @@ MONGODB_URI=your_mongodb_connection_string
 PORT=5000
 CLIENT_URL=your_frontend_url
 JWT_SECRET=your_jwt_secret_key
+JWT_EXPIRE=7d
+NODE_ENV=development
 ```
+
+### Required Environment Variables:
+- **MONGODB_URI** - MongoDB connection string (e.g., `mongodb+srv://user:pass@cluster.mongodb.net/dbname`)
+- **CLIENT_URL** - Frontend URL for CORS (can be comma-separated for multiple URLs)
+- **JWT_SECRET** - Secret key for JWT token signing (use a strong random string)
+
+### Optional Environment Variables:
+- **PORT** - Server port (defaults to 5000)
+- **JWT_EXPIRE** - JWT token expiration time (defaults to '7d')
+- **NODE_ENV** - Environment mode: 'development' or 'production'
 
 3. Start the server:
 ```bash
@@ -39,10 +51,22 @@ npm start
 ### Render Deployment
 
 1. Create a new Web Service on Render
-2. Connect your GitHub repository
+2. Connect your GitHub repository: `https://github.com/anamika7078/Chalo_on_Tour_Server.git`
 3. Build command: `npm install`
 4. Start command: `npm start`
-5. Set environment variables in Render dashboard
+5. Set the following environment variables in Render dashboard:
+
+**Required Environment Variables:**
+- `MONGODB_URI` - Your MongoDB Atlas connection string
+- `CLIENT_URL` - Your frontend URL (e.g., `https://your-frontend.onrender.com`)
+- `JWT_SECRET` - A strong random string for JWT signing (generate with: `openssl rand -base64 32`)
+
+**Optional Environment Variables:**
+- `PORT` - Server port (Render auto-assigns, but you can set it)
+- `JWT_EXPIRE` - Token expiration (default: `7d`)
+- `NODE_ENV` - Set to `production`
+
+**Note:** The `render.yaml` file is included for automatic configuration. If using Render Blueprint, it will auto-detect these settings.
 
 ### Railway Deployment
 
