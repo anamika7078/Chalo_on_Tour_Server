@@ -6,7 +6,7 @@ This document lists all environment variables required for deploying the Chalo O
 
 ### 1. MONGODB_URI
 - **Description**: MongoDB connection string
-- **Example**: `mongodb+srv://username:password@cluster.mongodb.net/dbname?retryWrites=true&w=majority`
+- **Example**: `mongodb+szzrv://username:password@cluster.mongodb.net/dbname?retryWrites=true&w=majority`
 - **How to get**: 
   - Create a MongoDB Atlas account at https://www.mongodb.com/cloud/atlas
   - Create a new cluster
@@ -15,9 +15,12 @@ This document lists all environment variables required for deploying the Chalo O
 
 ### 2. CLIENT_URL
 - **Description**: Frontend URL for CORS configuration
-- **Example**: `https://your-frontend.onrender.com`
-- **Note**: Can be comma-separated for multiple URLs (e.g., `https://app1.com,https://app2.com`)
-- **How to get**: Your deployed frontend URL on Render or Vercel
+- **Example**: `https://chaloontourclient.vercel.app`
+- **Important**: 
+  - Do NOT include trailing slash (e.g., use `https://chaloontourclient.vercel.app` NOT `https://chaloontourclient.vercel.app/`)
+  - Can be comma-separated for multiple URLs (e.g., `https://app1.com,https://app2.com`)
+  - Must match exactly the origin of your frontend requests
+- **How to get**: Your deployed frontend URL on Render or Vercel (without trailing slash)
 
 ### 3. JWT_SECRET
 - **Description**: Secret key for signing JWT tokens

@@ -16,12 +16,18 @@ app.set('trust proxy', 1);
 app.use(helmet({ crossOriginResourcePolicy: { policy: 'cross-origin' } }));
 const allowedOrigins = ['http://localhost:3000', 'http://localhost:3001'];
 // Production: set CLIENT_URL to your Vercel URL(s), comma-separated for multiple (e.g. main + preview)
-const clientUrls = process.env.CLIENT_URL ? process.env.CLIENT_URL.split(',').map(u => u.trim()).filter(Boolean) : [];
+const clientUrls = process.env.CLIENT_URL ? process.env.CLIENT_URL.split(',').map(u => u.trim().replace(/\/$/, '')).filter(Boolean) : [];
 app.use(cors({
   origin: function (origin, callback) {
     if (!origin) return callback(null, true);
-    if (allowedOrigins.includes(origin)) return callback(null, true);
-    if (clientUrls.length && clientUrls.some(url => origin === url || origin === url.replace(/\/$/, ''))) return callback(null, true);
+    // Normalize origin (remove trailing slash)
+    const normalizedOrigin = origin.replace(/\/$/, '');
+    if (allowedOrigins.includes(origin) || allowedOrigins.includes(normalizedOrigin)) return callback(null, true);
+    if (clientUrls.length && clientUrls.some(url => {
+      const normalizedUrl = url.replace(/\/$/, '');
+      return normalizedOrigin === normalizedUrl || origin === url || origin === normalizedUrl;
+    })) return callback(null, true);
+    console.warn('CORS blocked origin:', origin, 'Allowed origins:', [...allowedOrigins, ...clientUrls]);
     callback(null, false);
   },
   credentials: true,
