@@ -11,6 +11,33 @@ const upload = multer({ storage: multer.memoryStorage(), limits: { fileSize: 10 
 
 const VALID_STATUSES = ['new', 'contacted', 'qualified', 'booked', 'lost'];
 
+function normalizePaxBreakup(value) {
+  if (!Array.isArray(value)) return [];
+  return value
+    .map((item) => ({
+      type: String(item?.type || '').trim(),
+      count: item?.count != null && item.count !== '' ? Number(item.count) : null
+    }))
+    .filter((item) => item.type || item.count != null);
+}
+
+function summarizePaxBreakup(paxBreakup) {
+  const totalCount = paxBreakup.reduce((sum, item) => sum + (Number.isFinite(item.count) ? item.count : 0), 0);
+  const paxSummary = paxBreakup
+    .map((item) => [item.count != null ? item.count : null, item.type].filter(Boolean).join(' ').trim())
+    .filter(Boolean)
+    .join(', ');
+  return {
+    totalCount: totalCount > 0 ? totalCount : null,
+    paxSummary: paxSummary || ''
+  };
+}
+
+function normalizeTripImages(value) {
+  if (!Array.isArray(value)) return [];
+  return value.map((item) => String(item || '').trim()).filter(Boolean);
+}
+
 function getLeadFilter(req) {
   const filter = {};
   if (req.user.role === 'staff') {
@@ -382,6 +409,45 @@ router.get('/trips', auth, checkModulePermission(), [
   }
 });
 
+router.post('/:id/duplicate', auth, checkModulePermission(), async (req, res) => {
+  try {
+    const sourceLead = await Lead.findById(req.params.id).lean();
+    if (!sourceLead) return res.status(404).json({ message: 'Lead not found' });
+
+    const assignedId = sourceLead.assigned_to ? sourceLead.assigned_to.toString() : null;
+    if (req.user.role === 'staff' && assignedId !== req.user.id) {
+      return res.status(403).json({ message: 'Access denied' });
+    }
+
+    const {
+      _id,
+      leadId,
+      createdAt,
+      updatedAt,
+      __v,
+      reminderDate,
+      reminderSent,
+      ...duplicateData
+    } = sourceLead;
+
+    const duplicatedLead = new Lead({
+      ...duplicateData,
+      name: sourceLead.name ? `(Copy) ${sourceLead.name}` : '(Copy)',
+      assigned_to: sourceLead.assigned_to || undefined
+    });
+
+    await duplicatedLead.save();
+
+    const lead = await Lead.findById(duplicatedLead._id)
+      .populate('assigned_to', 'firstName lastName email')
+      .lean();
+
+    res.status(201).json({ lead });
+  } catch (err) {
+    res.status(500).json({ message: err.message || 'Server error' });
+  }
+});
+
 router.get('/:id', auth, checkModulePermission(), async (req, res) => {
   try {
     const lead = await Lead.findById(req.params.id).populate('assigned_to', 'firstName lastName email').lean();
@@ -399,9 +465,36 @@ router.get('/:id', auth, checkModulePermission(), async (req, res) => {
 /** GET /leads/:id/tour-summary-pdf — stream PDF of tour summary for the lead (HTML/CSS via Puppeteer) */
 router.get('/:id/tour-summary-pdf', auth, checkModulePermission(), async (req, res) => {
   try {
-    const lead = await Lead.findById(req.params.id).populate('assigned_to', 'firstName lastName email').lean();
+    const lead = await Lead.findById(req.params.id)
+      .select([
+        'leadId',
+        'assigned_to',
+        'total_amount',
+        'packageCostPerPerson',
+        'paxCount',
+        'paxType',
+        'paxBreakup',
+        'vehicleType',
+        'hotelCategory',
+        'mealPlan',
+        'tourNights',
+        'tourDays',
+        'tourStartDate',
+        'tourEndDate',
+        'travel_date',
+        'pickupPoint',
+        'dropPoint',
+        'destinations',
+        'destination',
+        'accommodation',
+        'flights',
+        'itinerary',
+        'tripImages',
+        'heroImageUrls'
+      ].join(' '))
+      .lean();
     if (!lead) return res.status(404).json({ message: 'Lead not found' });
-    const assignedId = lead.assigned_to && (lead.assigned_to._id ? lead.assigned_to._id.toString() : lead.assigned_to.toString());
+    const assignedId = lead.assigned_to ? lead.assigned_to.toString() : null;
     if (req.user.role === 'staff' && assignedId !== req.user.id) {
       return res.status(403).json({ message: 'Access denied' });
     }
@@ -420,6 +513,8 @@ router.post('/', auth, requireSuperadmin(), [
     const errors = validationResult(req);
     if (!errors.isEmpty()) return res.status(400).json({ message: 'Validation failed', errors: errors.array() });
     const status = VALID_STATUSES.includes((req.body.status || '').toLowerCase()) ? req.body.status.toLowerCase() : 'new';
+    const paxBreakup = normalizePaxBreakup(req.body.paxBreakup);
+    const paxBreakupSummary = summarizePaxBreakup(paxBreakup);
     const lead = new Lead({
       name: req.body.name.trim(),
       phone: req.body.phone.trim(),
@@ -434,8 +529,10 @@ router.post('/', auth, requireSuperadmin(), [
       payment_status: ['unpaid', 'partial', 'paid'].includes(req.body.payment_status) ? req.body.payment_status : 'unpaid',
       source: 'manual',
       notes: req.body.notes?.trim() || '',
-      paxCount: req.body.paxCount != null ? Number(req.body.paxCount) : undefined,
-      paxType: req.body.paxType?.trim() || undefined,
+      packageCostPerPerson: req.body.packageCostPerPerson != null && req.body.packageCostPerPerson !== '' ? Number(req.body.packageCostPerPerson) : undefined,
+      paxCount: paxBreakupSummary.totalCount ?? (req.body.paxCount != null ? Number(req.body.paxCount) : undefined),
+      paxType: paxBreakupSummary.paxSummary || req.body.paxType?.trim() || undefined,
+      paxBreakup: paxBreakup.length ? paxBreakup : undefined,
       vehicleType: req.body.vehicleType?.trim() || undefined,
       hotelCategory: req.body.hotelCategory?.trim() || undefined,
       mealPlan: req.body.mealPlan?.trim() || undefined,
@@ -459,17 +556,22 @@ router.post('/', auth, requireSuperadmin(), [
         from: (f.from || '').trim() || '',
         to: (f.to || '').trim() || '',
         airline: (f.airline || '').trim() || '',
-        pnr: (f.pnr || '').trim() || ''
-      })).filter((f) => f.from || f.to || f.airline || f.pnr) : undefined,
+        pnr: (f.pnr || '').trim() || '',
+        fare: f.fare != null && f.fare !== '' ? Number(f.fare) : null
+      })).filter((f) => f.from || f.to || f.airline || f.pnr || f.fare != null) : undefined,
+      tripImages: normalizeTripImages(req.body.tripImages),
       itinerary: Array.isArray(req.body.itinerary) ? req.body.itinerary.map((item) => ({
         day: item.day != null && item.day !== '' ? Number(item.day) : null,
         route: (item.route || '').trim() || '',
+        description: (item.description || '').trim() || '',
         places: Array.isArray(item.places) ? item.places.map((p) => String(p).trim()).filter(Boolean) : []
-      })).filter((item) => item.day != null || item.route || (item.places && item.places.length)) : undefined,
+      })).filter((item) => item.day != null || item.route || item.description || (item.places && item.places.length)) : undefined,
       inclusions: req.body.inclusions != null ? String(req.body.inclusions).trim() : undefined,
       exclusions: req.body.exclusions != null ? String(req.body.exclusions).trim() : undefined,
       payment_policy: req.body.payment_policy != null ? String(req.body.payment_policy).trim() : undefined,
-      cancellation_policy: req.body.cancellation_policy != null ? String(req.body.cancellation_policy).trim() : undefined
+      cancellation_policy: req.body.cancellation_policy != null ? String(req.body.cancellation_policy).trim() : undefined,
+      termsAndConditions: req.body.termsAndConditions != null ? String(req.body.termsAndConditions).trim() : undefined,
+      memorableTrip: req.body.memorableTrip != null ? String(req.body.memorableTrip).trim() : undefined
     });
     await lead.save();
     const leadObj = await Lead.findById(lead._id).populate('assigned_to', 'firstName lastName email').lean();
@@ -495,7 +597,7 @@ router.put('/:id', auth, checkModulePermission(), async (req, res) => {
       if (body.notes !== undefined) lead.notes = body.notes;
     } else {
       const allowed = ['name', 'phone', 'email', 'destination', 'travel_date', 'budget', 'status', 'assigned_to', 'total_amount', 'advance_amount', 'payment_status', 'notes', 'followups',
-        'paxCount', 'paxType', 'vehicleType', 'hotelCategory', 'mealPlan', 'tourNights', 'tourDays', 'tourStartDate', 'tourEndDate', 'pickupPoint', 'dropPoint', 'destinations', 'accommodation', 'flights', 'itinerary', 'inclusions', 'exclusions', 'payment_policy', 'cancellation_policy'];
+        'packageCostPerPerson', 'paxCount', 'paxType', 'paxBreakup', 'vehicleType', 'hotelCategory', 'mealPlan', 'tourNights', 'tourDays', 'tourStartDate', 'tourEndDate', 'pickupPoint', 'dropPoint', 'destinations', 'accommodation', 'flights', 'tripImages', 'itinerary', 'inclusions', 'exclusions', 'payment_policy', 'cancellation_policy', 'termsAndConditions', 'memorableTrip'];
       allowed.forEach(f => {
         if (req.body[f] === undefined) return;
         if (f === 'travel_date') lead.travel_date = req.body[f] ? new Date(req.body[f]) : undefined;
@@ -521,18 +623,27 @@ router.put('/:id', auth, checkModulePermission(), async (req, res) => {
               from: (fl.from || '').trim() || '',
               to: (fl.to || '').trim() || '',
               airline: (fl.airline || '').trim() || '',
-              pnr: (fl.pnr || '').trim() || ''
+              pnr: (fl.pnr || '').trim() || '',
+              fare: fl.fare != null && fl.fare !== '' ? Number(fl.fare) : null
             }))
-            .filter((fl) => fl.from || fl.to || fl.airline || fl.pnr);
+            .filter((fl) => fl.from || fl.to || fl.airline || fl.pnr || fl.fare != null);
+        } else if (f === 'tripImages' && Array.isArray(req.body[f])) {
+          lead.tripImages = normalizeTripImages(req.body[f]);
         } else if (f === 'itinerary' && Array.isArray(req.body[f])) {
           lead.itinerary = req.body[f]
             .map((item) => ({
               day: item.day != null && item.day !== '' ? Number(item.day) : null,
               route: (item.route || '').trim() || '',
+              description: (item.description || '').trim() || '',
               places: Array.isArray(item.places) ? item.places.map((p) => String(p).trim()).filter(Boolean) : []
             }))
-            .filter((item) => item.day != null || item.route || (item.places && item.places.length));
-        } else if (f === 'paxCount' || f === 'tourNights' || f === 'tourDays') lead[f] = req.body[f] != null && req.body[f] !== '' ? Number(req.body[f]) : null;
+            .filter((item) => item.day != null || item.route || item.description || (item.places && item.places.length));
+        } else if (f === 'paxBreakup' && Array.isArray(req.body[f])) {
+          lead.paxBreakup = normalizePaxBreakup(req.body[f]);
+          const paxBreakupSummary = summarizePaxBreakup(lead.paxBreakup);
+          lead.paxCount = paxBreakupSummary.totalCount;
+          lead.paxType = paxBreakupSummary.paxSummary;
+        } else if (f === 'packageCostPerPerson' || f === 'paxCount' || f === 'tourNights' || f === 'tourDays') lead[f] = req.body[f] != null && req.body[f] !== '' ? Number(req.body[f]) : null;
         else lead[f] = req.body[f];
       });
     }

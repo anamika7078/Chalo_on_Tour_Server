@@ -1,8 +1,49 @@
 const express = require('express');
 const User = require('../models/User');
 const { auth, requireSuperadmin } = require('../middleware/auth');
+const { body, validationResult } = require('express-validator');
 
 const router = express.Router();
+
+/** Create user (super admin only) */
+router.post('/', auth, requireSuperadmin(), [
+  body('firstName').trim().notEmpty().withMessage('First name is required'),
+  body('lastName').trim().notEmpty().withMessage('Last name is required'),
+  body('email').isEmail().withMessage('Valid email is required').normalizeEmail(),
+  body('password').isLength({ min: 6 }).withMessage('Password must be at least 6 characters'),
+  body('role').optional().isIn(['staff', 'superadmin']).withMessage('Invalid role')
+], async (req, res) => {
+  try {
+    const errors = validationResult(req);
+    if (!errors.isEmpty()) {
+      return res.status(400).json({ message: errors.array()[0].msg, errors: errors.array() });
+    }
+
+    const { firstName, lastName, email, password, role, phone, isActive, team } = req.body;
+
+    const existingUser = await User.findOne({ email: (email || '').trim().toLowerCase() });
+    if (existingUser) {
+      return res.status(400).json({ message: 'Email already in use' });
+    }
+
+    const user = await User.create({
+      firstName: firstName.trim(),
+      lastName: lastName.trim(),
+      email: email.trim().toLowerCase(),
+      password: password.trim(),
+      role: ['staff', 'superadmin'].includes(role) ? role : 'staff',
+      phone: phone ? String(phone).trim() : '',
+      isActive: typeof isActive === 'boolean' ? isActive : true,
+      team: team ? String(team).trim() : undefined
+    });
+
+    const out = await User.findById(user._id).select('-password').lean();
+    return res.status(201).json({ message: 'User created successfully', user: out });
+  } catch (err) {
+    if (err.code === 11000) return res.status(400).json({ message: 'Email already in use' });
+    return res.status(500).json({ message: 'Server error' });
+  }
+});
 
 /** List users (staff + superadmin) for assign dropdown - superadmin only */
 router.get('/', auth, requireSuperadmin(), async (req, res) => {
