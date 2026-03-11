@@ -18,8 +18,13 @@ const leadSchema = new mongoose.Schema({
   notes: { type: String, default: '' },
   followups: [{ date: { type: Date, required: true }, note: { type: String, required: true } }],
   // Tour Summary (Phase 1)
+  packageCostPerPerson: { type: Number, default: null },
   paxCount: { type: Number, default: null },
   paxType: { type: String, trim: true, default: '' },
+  paxBreakup: [{
+    type: { type: String, trim: true, default: '' },
+    count: { type: Number, default: null }
+  }],
   vehicleType: { type: String, trim: true, default: '' },
   hotelCategory: { type: String, trim: true, default: '' },
   mealPlan: { type: String, trim: true, default: '' },
@@ -46,12 +51,15 @@ const leadSchema = new mongoose.Schema({
     from: { type: String, trim: true, default: '' },
     to: { type: String, trim: true, default: '' },
     airline: { type: String, trim: true, default: '' },
-    pnr: { type: String, trim: true, default: '' }
+    pnr: { type: String, trim: true, default: '' },
+    fare: { type: Number, default: null }
   }],
+  tripImages: [{ type: String, trim: true }],
   // Day-wise Itinerary (Phase 3)
   itinerary: [{
     day: { type: Number, default: null },
     route: { type: String, trim: true, default: '' },
+    description: { type: String, trim: true, default: '' },
     places: [{ type: String, trim: true }]
   }],
   // Automated trip reminder (2 days before trip start date)
@@ -62,7 +70,9 @@ const leadSchema = new mongoose.Schema({
   exclusions: { type: String, default: '' },
   // Payment & Cancellation policy (Phase 6)
   payment_policy: { type: String, default: '' },
-  cancellation_policy: { type: String, default: '' }
+  cancellation_policy: { type: String, default: '' },
+  termsAndConditions: { type: String, default: '' },
+  memorableTrip: { type: String, default: '' }
 }, { timestamps: true });
 
 leadSchema.pre('save', async function (next) {
