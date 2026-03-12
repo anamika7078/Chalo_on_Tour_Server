@@ -13,12 +13,16 @@ const leadSchema = new mongoose.Schema({
   total_amount: { type: Number, default: 0 },
   advance_amount: { type: Number, default: 0 },
   remaining_amount: { type: Number, default: 0 },
+  advanceDueDate: { type: Date, default: null },
+  paymentDueDate: { type: Date, default: null },
   payment_status: { type: String, enum: ['unpaid', 'partial', 'paid'], default: 'unpaid' },
   source: { type: String, enum: ['manual', 'excel'], default: 'manual' },
   notes: { type: String, default: '' },
   followups: [{ date: { type: Date, required: true }, note: { type: String, required: true } }],
   // Tour Summary (Phase 1)
   packageCostPerPerson: { type: Number, default: null },
+  kidsPackageCostPerPerson: { type: Number, default: null },
+  kidsCount: { type: Number, default: null },
   paxCount: { type: Number, default: null },
   paxType: { type: String, trim: true, default: '' },
   paxBreakup: [{
@@ -42,9 +46,16 @@ const leadSchema = new mongoose.Schema({
     roomType: { type: String, trim: true, default: '' },
     sharing: { type: String, trim: true, default: '' },
     destination: { type: String, trim: true, default: '' },
-    // Hotel-wise payment (view only, not in PDF)
     hotelTotalAmount: { type: Number, default: null },
-    hotelPaidAmount: { type: Number, default: null }
+    hotelPaidAmount: { type: Number, default: null },
+    hotelBalanceDueDate: { type: Date, default: null }
+  }],
+  vehicles: [{
+    vehicleName: { type: String, trim: true, default: '' },
+    vehicleType: { type: String, trim: true, default: '' },
+    vehicleTotalAmount: { type: Number, default: null },
+    vehicleAdvanceAmount: { type: Number, default: null },
+    vehicleBalanceDueDate: { type: Date, default: null }
   }],
   // Flight Details
   flights: [{
@@ -62,9 +73,6 @@ const leadSchema = new mongoose.Schema({
     description: { type: String, trim: true, default: '' },
     places: [{ type: String, trim: true }]
   }],
-  // Automated trip reminder (2 days before trip start date)
-  reminderDate: { type: Date, default: null },
-  reminderSent: { type: Boolean, default: false },
   // Inclusions / Exclusions (Phase 4)
   inclusions: { type: String, default: '' },
   exclusions: { type: String, default: '' },
@@ -79,27 +87,6 @@ leadSchema.pre('save', async function (next) {
   const total = Number(this.total_amount) || 0;
   const advance = Number(this.advance_amount) || 0;
   this.remaining_amount = Math.max(0, total - advance);
-
-  // Auto-calculate reminderDate as 2 days before trip start date (travel_date or tourStartDate)
-  if (this.isNew || this.isModified('travel_date') || this.isModified('tourStartDate')) {
-    const tripStart = this.travel_date || this.tourStartDate;
-    if (tripStart) {
-      const tripStartDate = new Date(tripStart);
-      if (!isNaN(tripStartDate.getTime())) {
-        const reminder = new Date(tripStartDate);
-        reminder.setDate(reminder.getDate() - 2);
-        // Normalize time (optional: start of the day)
-        reminder.setHours(9, 0, 0, 0);
-        this.reminderDate = reminder;
-        // Any time we recalculate reminder, allow reminder to be sent again
-        this.reminderSent = false;
-      } else {
-        this.reminderDate = null;
-      }
-    } else {
-      this.reminderDate = null;
-    }
-  }
 
   if (!this.leadId) {
     try {
@@ -130,6 +117,7 @@ leadSchema.index({ status: 1 });
 leadSchema.index({ assigned_to: 1 });
 leadSchema.index({ createdAt: -1 });
 leadSchema.index({ travel_date: 1 });
-leadSchema.index({ reminderDate: 1, reminderSent: 1 });
+leadSchema.index({ advanceDueDate: 1 });
+leadSchema.index({ paymentDueDate: 1 });
 
 module.exports = mongoose.model('Lead', leadSchema);

@@ -80,7 +80,6 @@ npm start
 - `/api/auth/*` - Authentication routes
 - `/api/leads/*` - Lead management routes
 - `/api/users/*` - User management routes
-- `/api/templates/*` - Package template routes
 - `/api/stats/*` - Statistics routes
 
 ## Default Users

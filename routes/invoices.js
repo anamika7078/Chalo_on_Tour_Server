@@ -87,6 +87,8 @@ function assignInvoiceFields(invoice, body, createdById) {
   invoice.endDate = parseDateOrNull(body.endDate);
   invoice.pricePerPerson = toPositiveNumber(body.pricePerPerson);
   invoice.numberOfPersons = toPositiveNumber(body.numberOfPersons);
+  invoice.kidsPricePerPerson = toPositiveNumber(body.kidsPricePerPerson);
+  invoice.kidsCount = toPositiveNumber(body.kidsCount);
   invoice.touristNames = normalizeStringArray(body.touristNames);
   invoice.advanceAmount = toPositiveNumber(body.advanceAmount);
   invoice.paymentMethod = PAYMENT_METHODS.includes(body.paymentMethod) ? body.paymentMethod : 'UPI';

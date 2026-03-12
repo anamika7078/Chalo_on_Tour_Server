@@ -88,10 +88,10 @@ router.get('/:id', auth, requireSuperadmin(), async (req, res) => {
   }
 });
 
-/** Update user (super admin only) - no password change */
+/** Update user (super admin only) */
 router.put('/:id', auth, requireSuperadmin(), async (req, res) => {
   try {
-    const { firstName, lastName, email, role, phone, isActive, team } = req.body;
+    const { firstName, lastName, email, role, phone, isActive, team, password } = req.body;
     const u = await User.findById(req.params.id);
     if (!u) return res.status(404).json({ message: 'User not found' });
     if (!['staff', 'superadmin'].includes(u.role)) return res.status(404).json({ message: 'User not found' });
@@ -102,6 +102,13 @@ router.put('/:id', auth, requireSuperadmin(), async (req, res) => {
     if (phone != null) u.phone = phone;
     if (typeof isActive === 'boolean') u.isActive = isActive;
     if (team != null) u.team = team;
+    if (password != null && String(password).trim()) {
+      const normalizedPassword = String(password).trim();
+      if (normalizedPassword.length < 6) {
+        return res.status(400).json({ message: 'Password must be at least 6 characters' });
+      }
+      u.password = normalizedPassword;
+    }
     await u.save();
     const out = await User.findById(u._id).select('-password').lean();
     res.json({ user: out });
@@ -111,16 +118,15 @@ router.put('/:id', auth, requireSuperadmin(), async (req, res) => {
   }
 });
 
-/** Delete user: soft delete (set isActive false) so data is kept */
+/** Delete user permanently */
 router.delete('/:id', auth, requireSuperadmin(), async (req, res) => {
   try {
     const u = await User.findById(req.params.id);
     if (!u) return res.status(404).json({ message: 'User not found' });
     if (!['staff', 'superadmin'].includes(u.role)) return res.status(404).json({ message: 'User not found' });
     if (req.user.id === req.params.id) return res.status(400).json({ message: 'Cannot delete your own account' });
-    u.isActive = false;
-    await u.save();
-    res.json({ message: 'User deactivated successfully' });
+    await User.deleteOne({ _id: u._id });
+    res.json({ message: 'User deleted successfully' });
   } catch (err) {
     res.status(500).json({ message: 'Server error' });
   }

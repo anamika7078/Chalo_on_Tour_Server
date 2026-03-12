@@ -27,6 +27,8 @@ const invoiceSchema = new mongoose.Schema({
   endDate: { type: Date, default: null },
   pricePerPerson: { type: Number, default: 0 },
   numberOfPersons: { type: Number, default: 0 },
+  kidsPricePerPerson: { type: Number, default: 0 },
+  kidsCount: { type: Number, default: 0 },
   totalAmount: { type: Number, default: 0 },
   touristNames: [{ type: String, trim: true }],
   advanceAmount: { type: Number, default: 0 },
@@ -40,11 +42,17 @@ const invoiceSchema = new mongoose.Schema({
 invoiceSchema.pre('save', async function (next) {
   const pricePerPerson = toPositiveNumber(this.pricePerPerson);
   const numberOfPersons = toPositiveNumber(this.numberOfPersons);
+  const kidsPricePerPerson = toPositiveNumber(this.kidsPricePerPerson);
+  const kidsCount = toPositiveNumber(this.kidsCount);
   const advanceAmount = toPositiveNumber(this.advanceAmount);
-  const totalAmount = pricePerPerson * numberOfPersons;
+  const adultTotal = pricePerPerson * numberOfPersons;
+  const kidsTotal = kidsPricePerPerson * kidsCount;
+  const totalAmount = adultTotal + kidsTotal;
 
   this.pricePerPerson = pricePerPerson;
   this.numberOfPersons = numberOfPersons;
+  this.kidsPricePerPerson = kidsPricePerPerson;
+  this.kidsCount = kidsCount;
   this.advanceAmount = advanceAmount;
   this.totalAmount = totalAmount;
   this.balanceAmount = Math.max(0, totalAmount - advanceAmount);

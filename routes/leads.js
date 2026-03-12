@@ -4,12 +4,55 @@ const XLSX = require('xlsx');
 const { body, validationResult, query } = require('express-validator');
 const Lead = require('../models/Lead');
 const { auth, checkModulePermission, requireSuperadmin } = require('../middleware/auth');
+const { buildTourSummaryHtml } = require('../lib/tourSummaryHtml');
 const { buildTourSummaryPdf } = require('../lib/tourSummaryPdf');
 
 const router = express.Router();
 const upload = multer({ storage: multer.memoryStorage(), limits: { fileSize: 10 * 1024 * 1024 } });
 
 const VALID_STATUSES = ['new', 'contacted', 'qualified', 'booked', 'lost'];
+const REMINDER_PAYMENT_STATUSES = ['qualified', 'booked'];
+const REMINDER_TRIP_STATUSES = ['new', 'contacted', 'qualified', 'booked'];
+
+function getRowValue(row, keys) {
+  for (const key of keys) {
+    if (row[key] != null && row[key] !== '') return row[key];
+  }
+  return '';
+}
+
+function parseOptionalDate(value) {
+  if (value == null || value === '') return undefined;
+  const normalized = String(value).trim();
+  if (!normalized || Number.isNaN(Date.parse(normalized))) return undefined;
+  return new Date(normalized);
+}
+
+function parseOptionalNumber(value) {
+  if (value == null || value === '') return undefined;
+  const normalized = Number(value);
+  return Number.isFinite(normalized) ? normalized : undefined;
+}
+
+function normalizePaymentStatus(value) {
+  const normalized = String(value || '').trim().toLowerCase();
+  return ['unpaid', 'partial', 'paid'].includes(normalized) ? normalized : undefined;
+}
+
+function buildReminderItem(lead, date) {
+  return {
+    date,
+    leadId: lead._id,
+    leadCode: lead.leadId,
+    leadName: lead.name,
+    destination: lead.destination,
+    status: lead.status,
+    total_amount: lead.total_amount,
+    advance_amount: lead.advance_amount,
+    remaining_amount: lead.remaining_amount,
+    payment_status: lead.payment_status
+  };
+}
 
 function normalizePaxBreakup(value) {
   if (!Array.isArray(value)) return [];
@@ -201,8 +244,8 @@ router.post('/upload', auth, requireSuperadmin(), upload.single('file'), async (
       const phone = (r.phone || '').trim();
       const email = (r.email || '').trim().toLowerCase();
       const destination = (r.destination || '').trim();
-      const travelDateRaw = r.travel_date || r.traveldate || '';
-      const travel_date = travelDateRaw && !isNaN(Date.parse(travelDateRaw)) ? new Date(travelDateRaw) : undefined;
+      const travelDateRaw = getRowValue(r, ['travel_date', 'traveldate', 'tour_date']);
+      const travel_date = parseOptionalDate(travelDateRaw);
       const budgetRaw = r.budget;
       const budget = budgetRaw != null && budgetRaw !== '' ? String(budgetRaw).trim() : undefined;
       const missing = required.filter(f => {
@@ -218,22 +261,24 @@ router.post('/upload', auth, requireSuperadmin(), upload.single('file'), async (
       const statusRaw = (r.status || 'new').toString().toLowerCase().trim().replace(/\s+/g, '_');
       const status = statusMap[statusRaw] || statusMap[statusRaw.replace(/_/g, '')] || 'new';
       const notes = (r.notes || '').trim() || undefined;
-      const packageCost = r.package_cost != null && r.package_cost !== '' ? Number(r.package_cost) : undefined;
-      const total_amount = Number.isFinite(packageCost) ? packageCost : undefined;
-      const noOfPax = r.no_of_pax != null && r.no_of_pax !== '' ? Number(r.no_of_pax) : undefined;
+      const packageCost = parseOptionalNumber(getRowValue(r, ['package_cost', 'total_amount', 'package_amount']));
+      const total_amount = packageCost;
+      const advance_amount = parseOptionalNumber(getRowValue(r, ['advance_amount', 'advance_paid', 'advance']));
+      const advanceDueDate = parseOptionalDate(getRowValue(r, ['advance_due_date', 'advance_due', 'advanceduedate']));
+      const paymentDueDate = parseOptionalDate(getRowValue(r, ['payment_due_date', 'payment_due', 'paymentduedate', 'final_due_date']));
+      const payment_status = normalizePaymentStatus(getRowValue(r, ['payment_status']));
+      const noOfPax = parseOptionalNumber(r.no_of_pax);
       const paxCount = Number.isFinite(noOfPax) && noOfPax > 0 ? noOfPax : undefined;
       const paxType = (r.pax_type || '').trim() || undefined;
       const vehicleType = (r.vehicle_type || '').trim() || undefined;
       const hotelCategory = (r.hotel_category || '').trim() || undefined;
       const mealPlan = (r.meal_plan || '').trim() || undefined;
-      const tourNightsRaw = r.tour_nights;
-      const tourNights = tourNightsRaw != null && tourNightsRaw !== '' && Number(tourNightsRaw) >= 0 ? Number(tourNightsRaw) : undefined;
-      const tourDaysRaw = r.tour_days;
-      const tourDays = tourDaysRaw != null && tourDaysRaw !== '' && Number(tourDaysRaw) >= 0 ? Number(tourDaysRaw) : undefined;
-      const tourStartRaw = r.tour_start_date || '';
-      const tourStartDate = tourStartRaw && !isNaN(Date.parse(tourStartRaw)) ? new Date(tourStartRaw) : undefined;
-      const tourEndRaw = r.tour_end_date || '';
-      const tourEndDate = tourEndRaw && !isNaN(Date.parse(tourEndRaw)) ? new Date(tourEndRaw) : undefined;
+      const tourNightsRaw = parseOptionalNumber(r.tour_nights);
+      const tourNights = Number.isFinite(tourNightsRaw) && tourNightsRaw >= 0 ? tourNightsRaw : undefined;
+      const tourDaysRaw = parseOptionalNumber(r.tour_days);
+      const tourDays = Number.isFinite(tourDaysRaw) && tourDaysRaw >= 0 ? tourDaysRaw : undefined;
+      const tourStartDate = parseOptionalDate(getRowValue(r, ['tour_start_date', 'tour_start', 'tourstartdate']));
+      const tourEndDate = parseOptionalDate(getRowValue(r, ['tour_end_date', 'tour_end', 'tourenddate']));
       const pickupPoint = (r.pick_up || '').trim() || undefined;
       const dropPoint = (r.drop || '').trim() || undefined;
       const destinationsStr = (r.destinations || '').trim();
@@ -254,6 +299,10 @@ router.post('/upload', auth, requireSuperadmin(), upload.single('file'), async (
           source: 'excel',
           notes,
           total_amount,
+          advance_amount,
+          advanceDueDate,
+          paymentDueDate,
+          payment_status,
           paxCount,
           paxType,
           vehicleType,
@@ -289,76 +338,76 @@ router.post('/upload', auth, requireSuperadmin(), upload.single('file'), async (
   }
 });
 
-  /** Reminders: upcoming follow-ups + payment-pending leads + upcoming trip reminders. */
+/** Reminders: payment due for qualified/booked, trips for active leads, plus overdue buckets. */
 router.get('/reminders', auth, checkModulePermission(), async (req, res) => {
   try {
-    const filter = getLeadFilter(req);
+    const filter = { ...getLeadFilter(req), status: { $in: REMINDER_TRIP_STATUSES } };
     const todayStart = new Date();
     todayStart.setHours(0, 0, 0, 0);
-    const daysAhead = parseInt(req.query.days) || 30;
+    const daysAhead = 5;
     const endDate = new Date(todayStart);
     endDate.setDate(endDate.getDate() + daysAhead);
 
     const leads = await Lead.find(filter)
-      .select('leadId name destination followups total_amount advance_amount remaining_amount payment_status reminderDate travel_date tourStartDate')
+      .select('leadId name destination total_amount advance_amount remaining_amount payment_status advanceDueDate paymentDueDate travel_date tourStartDate status')
       .lean();
-    const followupReminders = [];
+    const advanceReminders = [];
     const paymentReminders = [];
+    const overdueAdvanceReminders = [];
+    const overduePaymentReminders = [];
     const tripReminders = [];
 
     for (const lead of leads) {
-      if (lead.followups && lead.followups.length) {
-        for (const fu of lead.followups) {
-          const d = new Date(fu.date);
-          d.setHours(0, 0, 0, 0);
-          if (d >= todayStart && d <= endDate) {
-            followupReminders.push({
-              date: fu.date,
-              note: fu.note || '',
-              leadId: lead._id,
-              leadCode: lead.leadId,
-              leadName: lead.name,
-              destination: lead.destination
-            });
-          }
+      const isPaymentReminderLead = REMINDER_PAYMENT_STATUSES.includes(lead.status);
+      const hasPendingPayment = lead.payment_status !== 'paid' || Number(lead.remaining_amount) > 0;
+
+      if (lead.advanceDueDate && hasPendingPayment && isPaymentReminderLead) {
+        const advanceDueDate = new Date(lead.advanceDueDate);
+        advanceDueDate.setHours(0, 0, 0, 0);
+        const reminderItem = buildReminderItem(lead, lead.advanceDueDate);
+        if (advanceDueDate < todayStart) {
+          overdueAdvanceReminders.push(reminderItem);
+        } else if (advanceDueDate <= endDate) {
+          advanceReminders.push(reminderItem);
         }
       }
-      // Trip reminder based on reminderDate within selected window
-      if (lead.reminderDate) {
-        const rd = new Date(lead.reminderDate);
-        rd.setHours(0, 0, 0, 0);
-        if (rd >= todayStart && rd <= endDate) {
-          const tripDate = lead.travel_date || lead.tourStartDate || null;
-          tripReminders.push({
-            date: lead.reminderDate,
-            tripDate,
-            leadId: lead._id,
-            leadCode: lead.leadId,
-            leadName: lead.name,
-            destination: lead.destination,
-            total_amount: lead.total_amount,
-            advance_amount: lead.advance_amount,
-            remaining_amount: lead.remaining_amount
-          });
+
+      if (lead.paymentDueDate && hasPendingPayment && isPaymentReminderLead) {
+        const paymentDueDate = new Date(lead.paymentDueDate);
+        paymentDueDate.setHours(0, 0, 0, 0);
+        const reminderItem = buildReminderItem(lead, lead.paymentDueDate);
+        if (paymentDueDate < todayStart) {
+          overduePaymentReminders.push(reminderItem);
+        } else if (paymentDueDate <= endDate) {
+          paymentReminders.push(reminderItem);
         }
       }
-      const isPaymentPending = lead.payment_status !== 'paid' || (Number(lead.remaining_amount) > 0);
-      if (isPaymentPending && (lead.total_amount > 0 || lead.advance_amount > 0)) {
-        paymentReminders.push({
-          leadId: lead._id,
-          leadCode: lead.leadId,
-          leadName: lead.name,
-          total_amount: lead.total_amount,
-          advance_amount: lead.advance_amount,
-          remaining_amount: lead.remaining_amount,
-          payment_status: lead.payment_status
-        });
+
+      const tripDate = lead.travel_date || lead.tourStartDate || null;
+      if (tripDate) {
+        const normalizedTripDate = new Date(tripDate);
+        normalizedTripDate.setHours(0, 0, 0, 0);
+        if (normalizedTripDate >= todayStart && normalizedTripDate <= endDate) {
+          tripReminders.push(buildReminderItem(lead, tripDate));
+        }
       }
     }
 
-    followupReminders.sort((a, b) => new Date(a.date) - new Date(b.date));
+    overdueAdvanceReminders.sort((a, b) => new Date(a.date) - new Date(b.date));
+    overduePaymentReminders.sort((a, b) => new Date(a.date) - new Date(b.date));
+    advanceReminders.sort((a, b) => new Date(a.date) - new Date(b.date));
+    paymentReminders.sort((a, b) => new Date(a.date) - new Date(b.date));
     tripReminders.sort((a, b) => new Date(a.date) - new Date(b.date));
-    res.json({ followupReminders, paymentReminders, tripReminders });
+    res.json({
+      overdueAdvanceReminders,
+      overduePaymentReminders,
+      advanceReminders,
+      paymentReminders,
+      tripReminders,
+      daysAhead,
+      paymentLeadStatuses: REMINDER_PAYMENT_STATUSES,
+      tripLeadStatuses: REMINDER_TRIP_STATUSES
+    });
   } catch (err) {
     res.status(500).json({ message: 'Server error' });
   }
@@ -425,8 +474,6 @@ router.post('/:id/duplicate', auth, checkModulePermission(), async (req, res) =>
       createdAt,
       updatedAt,
       __v,
-      reminderDate,
-      reminderSent,
       ...duplicateData
     } = sourceLead;
 
@@ -487,18 +534,88 @@ router.get('/:id/tour-summary-pdf', auth, checkModulePermission(), async (req, r
         'destinations',
         'destination',
         'accommodation',
+        'vehicles',
         'flights',
         'itinerary',
+        'inclusions',
+        'exclusions',
+        'payment_policy',
+        'cancellation_policy',
+        'termsAndConditions',
+        'memorableTrip',
         'tripImages',
         'heroImageUrls'
       ].join(' '))
+      .populate('assigned_to', 'firstName lastName email')
       .lean();
     if (!lead) return res.status(404).json({ message: 'Lead not found' });
-    const assignedId = lead.assigned_to ? lead.assigned_to.toString() : null;
+    const assignedId = lead.assigned_to && lead.assigned_to._id
+      ? lead.assigned_to._id.toString()
+      : lead.assigned_to
+        ? lead.assigned_to.toString()
+        : null;
     if (req.user.role === 'staff' && assignedId !== req.user.id) {
       return res.status(403).json({ message: 'Access denied' });
     }
     await buildTourSummaryPdf(lead, res);
+  } catch (err) {
+    res.status(500).json({ message: 'Server error' });
+  }
+});
+
+/** GET /leads/:id/tour-summary-word — download Word-compatible tour summary for the lead */
+router.get('/:id/tour-summary-word', auth, checkModulePermission(), async (req, res) => {
+  try {
+    const lead = await Lead.findById(req.params.id)
+      .select([
+        'leadId',
+        'assigned_to',
+        'destination',
+        'travel_date',
+        'total_amount',
+        'packageCostPerPerson',
+        'paxCount',
+        'paxType',
+        'paxBreakup',
+        'vehicleType',
+        'hotelCategory',
+        'mealPlan',
+        'tourNights',
+        'tourDays',
+        'tourStartDate',
+        'tourEndDate',
+        'pickupPoint',
+        'dropPoint',
+        'destinations',
+        'accommodation',
+        'vehicles',
+        'flights',
+        'itinerary',
+        'tripImages',
+        'inclusions',
+        'exclusions',
+        'payment_policy',
+        'cancellation_policy',
+        'termsAndConditions',
+        'memorableTrip'
+      ].join(' '))
+      .populate('assigned_to', 'firstName lastName email')
+      .lean();
+    if (!lead) return res.status(404).json({ message: 'Lead not found' });
+    const assignedId = lead.assigned_to && lead.assigned_to._id
+      ? lead.assigned_to._id.toString()
+      : lead.assigned_to
+        ? lead.assigned_to.toString()
+        : null;
+    if (req.user.role === 'staff' && assignedId !== req.user.id) {
+      return res.status(403).json({ message: 'Access denied' });
+    }
+
+    const leadId = lead.leadId || lead._id?.toString() || 'lead';
+    const html = buildTourSummaryHtml(lead);
+    res.setHeader('Content-Disposition', `attachment; filename="tour-summary-${leadId}.doc"`);
+    res.setHeader('Content-Type', 'application/msword; charset=utf-8');
+    res.send(`\ufeff${html}`);
   } catch (err) {
     res.status(500).json({ message: 'Server error' });
   }
@@ -515,7 +632,7 @@ router.post('/', auth, requireSuperadmin(), [
     const status = VALID_STATUSES.includes((req.body.status || '').toLowerCase()) ? req.body.status.toLowerCase() : 'new';
     const paxBreakup = normalizePaxBreakup(req.body.paxBreakup);
     const paxBreakupSummary = summarizePaxBreakup(paxBreakup);
-    const lead = new Lead({
+      const lead = new Lead({
       name: req.body.name.trim(),
       phone: req.body.phone.trim(),
       email: req.body.email.trim().toLowerCase(),
@@ -526,10 +643,14 @@ router.post('/', auth, requireSuperadmin(), [
       assigned_to: req.body.assigned_to || undefined,
       total_amount: Number(req.body.total_amount) || 0,
       advance_amount: Number(req.body.advance_amount) || 0,
+        advanceDueDate: req.body.advanceDueDate ? new Date(req.body.advanceDueDate) : undefined,
+        paymentDueDate: req.body.paymentDueDate ? new Date(req.body.paymentDueDate) : undefined,
       payment_status: ['unpaid', 'partial', 'paid'].includes(req.body.payment_status) ? req.body.payment_status : 'unpaid',
       source: 'manual',
       notes: req.body.notes?.trim() || '',
       packageCostPerPerson: req.body.packageCostPerPerson != null && req.body.packageCostPerPerson !== '' ? Number(req.body.packageCostPerPerson) : undefined,
+      kidsPackageCostPerPerson: req.body.kidsPackageCostPerPerson != null && req.body.kidsPackageCostPerPerson !== '' ? Number(req.body.kidsPackageCostPerPerson) : undefined,
+      kidsCount: req.body.kidsCount != null && req.body.kidsCount !== '' ? Number(req.body.kidsCount) : undefined,
       paxCount: paxBreakupSummary.totalCount ?? (req.body.paxCount != null ? Number(req.body.paxCount) : undefined),
       paxType: paxBreakupSummary.paxSummary || req.body.paxType?.trim() || undefined,
       paxBreakup: paxBreakup.length ? paxBreakup : undefined,
@@ -550,8 +671,16 @@ router.post('/', auth, requireSuperadmin(), [
         sharing: (a.sharing || '').trim() || '',
         destination: (a.destination || '').trim() || '',
         hotelTotalAmount: a.hotelTotalAmount != null && a.hotelTotalAmount !== '' ? Number(a.hotelTotalAmount) : null,
-        hotelPaidAmount: a.hotelPaidAmount != null && a.hotelPaidAmount !== '' ? Number(a.hotelPaidAmount) : null
+        hotelPaidAmount: a.hotelPaidAmount != null && a.hotelPaidAmount !== '' ? Number(a.hotelPaidAmount) : null,
+        hotelBalanceDueDate: a.hotelBalanceDueDate ? new Date(a.hotelBalanceDueDate) : null
       })).filter((a) => a.hotelName || a.destination) : undefined,
+      vehicles: Array.isArray(req.body.vehicles) ? req.body.vehicles.map((v) => ({
+        vehicleName: (v.vehicleName || '').trim() || '',
+        vehicleType: (v.vehicleType || '').trim() || '',
+        vehicleTotalAmount: v.vehicleTotalAmount != null && v.vehicleTotalAmount !== '' ? Number(v.vehicleTotalAmount) : null,
+        vehicleAdvanceAmount: v.vehicleAdvanceAmount != null && v.vehicleAdvanceAmount !== '' ? Number(v.vehicleAdvanceAmount) : null,
+        vehicleBalanceDueDate: v.vehicleBalanceDueDate ? new Date(v.vehicleBalanceDueDate) : null
+      })).filter((v) => v.vehicleName || v.vehicleType || v.vehicleTotalAmount != null || v.vehicleAdvanceAmount != null || v.vehicleBalanceDueDate) : undefined,
       flights: Array.isArray(req.body.flights) ? req.body.flights.map((f) => ({
         from: (f.from || '').trim() || '',
         to: (f.to || '').trim() || '',
@@ -596,13 +725,15 @@ router.put('/:id', auth, checkModulePermission(), async (req, res) => {
       if (body.status !== undefined) lead.status = VALID_STATUSES.includes(body.status) ? body.status : lead.status;
       if (body.notes !== undefined) lead.notes = body.notes;
     } else {
-      const allowed = ['name', 'phone', 'email', 'destination', 'travel_date', 'budget', 'status', 'assigned_to', 'total_amount', 'advance_amount', 'payment_status', 'notes', 'followups',
-        'packageCostPerPerson', 'paxCount', 'paxType', 'paxBreakup', 'vehicleType', 'hotelCategory', 'mealPlan', 'tourNights', 'tourDays', 'tourStartDate', 'tourEndDate', 'pickupPoint', 'dropPoint', 'destinations', 'accommodation', 'flights', 'tripImages', 'itinerary', 'inclusions', 'exclusions', 'payment_policy', 'cancellation_policy', 'termsAndConditions', 'memorableTrip'];
+      const allowed = ['name', 'phone', 'email', 'destination', 'travel_date', 'budget', 'status', 'assigned_to', 'total_amount', 'advance_amount', 'advanceDueDate', 'paymentDueDate', 'payment_status', 'notes', 'followups',
+        'packageCostPerPerson', 'kidsPackageCostPerPerson', 'kidsCount', 'paxCount', 'paxType', 'paxBreakup', 'vehicleType', 'hotelCategory', 'mealPlan', 'tourNights', 'tourDays', 'tourStartDate', 'tourEndDate', 'pickupPoint', 'dropPoint', 'destinations', 'accommodation', 'vehicles', 'flights', 'tripImages', 'itinerary', 'inclusions', 'exclusions', 'payment_policy', 'cancellation_policy', 'termsAndConditions', 'memorableTrip'];
       allowed.forEach(f => {
         if (req.body[f] === undefined) return;
         if (f === 'travel_date') lead.travel_date = req.body[f] ? new Date(req.body[f]) : undefined;
         else if (f === 'tourStartDate') lead.tourStartDate = req.body[f] ? new Date(req.body[f]) : undefined;
         else if (f === 'tourEndDate') lead.tourEndDate = req.body[f] ? new Date(req.body[f]) : undefined;
+        else if (f === 'advanceDueDate') lead.advanceDueDate = req.body[f] ? new Date(req.body[f]) : null;
+        else if (f === 'paymentDueDate') lead.paymentDueDate = req.body[f] ? new Date(req.body[f]) : null;
         else if (f === 'followups' && Array.isArray(req.body[f])) lead.followups = req.body[f];
         else if (f === 'destinations' && Array.isArray(req.body[f])) lead.destinations = req.body[f].map((d) => String(d).trim()).filter(Boolean);
         else if (f === 'accommodation' && Array.isArray(req.body[f])) {
@@ -614,9 +745,20 @@ router.put('/:id', auth, checkModulePermission(), async (req, res) => {
               sharing: (a.sharing || '').trim() || '',
               destination: (a.destination || '').trim() || '',
               hotelTotalAmount: a.hotelTotalAmount != null && a.hotelTotalAmount !== '' ? Number(a.hotelTotalAmount) : null,
-              hotelPaidAmount: a.hotelPaidAmount != null && a.hotelPaidAmount !== '' ? Number(a.hotelPaidAmount) : null
+              hotelPaidAmount: a.hotelPaidAmount != null && a.hotelPaidAmount !== '' ? Number(a.hotelPaidAmount) : null,
+              hotelBalanceDueDate: a.hotelBalanceDueDate ? new Date(a.hotelBalanceDueDate) : null
             }))
             .filter((a) => a.hotelName || a.destination);
+        } else if (f === 'vehicles' && Array.isArray(req.body[f])) {
+          lead.vehicles = req.body[f]
+            .map((v) => ({
+              vehicleName: (v.vehicleName || '').trim() || '',
+              vehicleType: (v.vehicleType || '').trim() || '',
+              vehicleTotalAmount: v.vehicleTotalAmount != null && v.vehicleTotalAmount !== '' ? Number(v.vehicleTotalAmount) : null,
+              vehicleAdvanceAmount: v.vehicleAdvanceAmount != null && v.vehicleAdvanceAmount !== '' ? Number(v.vehicleAdvanceAmount) : null,
+              vehicleBalanceDueDate: v.vehicleBalanceDueDate ? new Date(v.vehicleBalanceDueDate) : null
+            }))
+            .filter((v) => v.vehicleName || v.vehicleType || v.vehicleTotalAmount != null || v.vehicleAdvanceAmount != null || v.vehicleBalanceDueDate);
         } else if (f === 'flights' && Array.isArray(req.body[f])) {
           lead.flights = req.body[f]
             .map((fl) => ({
@@ -643,7 +785,7 @@ router.put('/:id', auth, checkModulePermission(), async (req, res) => {
           const paxBreakupSummary = summarizePaxBreakup(lead.paxBreakup);
           lead.paxCount = paxBreakupSummary.totalCount;
           lead.paxType = paxBreakupSummary.paxSummary;
-        } else if (f === 'packageCostPerPerson' || f === 'paxCount' || f === 'tourNights' || f === 'tourDays') lead[f] = req.body[f] != null && req.body[f] !== '' ? Number(req.body[f]) : null;
+        } else if (f === 'packageCostPerPerson' || f === 'kidsPackageCostPerPerson' || f === 'kidsCount' || f === 'paxCount' || f === 'tourNights' || f === 'tourDays') lead[f] = req.body[f] != null && req.body[f] !== '' ? Number(req.body[f]) : null;
         else lead[f] = req.body[f];
       });
     }

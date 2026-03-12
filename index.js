@@ -7,7 +7,6 @@ const rateLimit = require('express-rate-limit');
 require('dotenv').config();
 
 const User = require('./models/User');
-const Lead = require('./models/Lead');
 const app = express();
 
 // Required when behind Vercel/reverse proxy so express-rate-limit and req.ip work correctly
@@ -79,8 +78,6 @@ mongoose.connect(mongoUri).then(() => {
     }
   })();
 
-  // Start background scheduler for trip reminders once DB is connected
-  startReminderScheduler();
 }).catch(err => console.error('MongoDB error:', err.message));
 
 app.use('/uploads', express.static(path.join(__dirname, 'uploads')));
@@ -90,7 +87,6 @@ app.use('/api/invoices', require('./routes/invoices'));
 app.use('/api/stats', require('./routes/stats'));
 app.use('/api/users', require('./routes/users'));
 app.use('/api/agencies', require('./routes/agencies'));
-app.use('/api/templates', require('./routes/templates'));
 
 app.get('/api/health', (req, res) => res.json({ status: 'OK', timestamp: new Date().toISOString() }));
 
@@ -104,63 +100,3 @@ const PORT = process.env.PORT || 5000;
 app.listen(PORT, '0.0.0.0', () => console.log(`Super Admin backend running on port ${PORT}`));
 
 module.exports = app;
-
-/**
- * Reminder scheduler
- * - Runs periodically and finds all leads whose reminderDate is due
- * - Sends an admin notification with upcoming tour details
- */
-async function sendAdminReminder(lead) {
-  // Build message as per requirement
-  const tripDate = lead.travel_date || lead.tourStartDate;
-  const advance = Number(lead.advance_amount) || 0;
-  const remaining = Number(lead.remaining_amount) || 0;
-  const message = [
-    'Upcoming Tour Reminder:',
-    `Customer: ${lead.name}`,
-    `Tour: ${lead.destination || 'N/A'}`,
-    `Trip Date: ${tripDate ? new Date(tripDate).toDateString() : 'N/A'}`,
-    `Advance Paid: ₹${advance}`,
-    `Remaining Payment: ₹${remaining}`
-  ].join('\n');
-
-  // TODO: Integrate with actual notification channel (email/SMS/WhatsApp, etc.)
-  // For now, log to server console so it is visible and testable.
-  console.log('=== ADMIN TRIP REMINDER ===');
-  console.log(message);
-  console.log('============================');
-}
-
-async function processDueReminders() {
-  const now = new Date();
-  try {
-    const dueLeads = await Lead.find({
-      // Any reminderDate in the past or now, that hasn't been sent yet
-      reminderDate: { $ne: null, $lte: now },
-      reminderSent: { $ne: true }
-    }).lean();
-
-    if (!dueLeads.length) return;
-
-    for (const leadData of dueLeads) {
-      try {
-        await sendAdminReminder(leadData);
-        // Mark as sent
-        await Lead.updateOne({ _id: leadData._id }, { $set: { reminderSent: true } });
-      } catch (err) {
-        console.error('Failed to process reminder for lead', leadData._id, err.message);
-      }
-    }
-  } catch (err) {
-    console.error('Error while checking due reminders:', err.message);
-  }
-}
-
-function startReminderScheduler() {
-  const intervalMs = 60 * 1000; // every 1 minute
-  setInterval(() => {
-    processDueReminders().catch((err) => {
-      console.error('Reminder scheduler unexpected error:', err.message);
-    });
-  }, intervalMs);
-}
